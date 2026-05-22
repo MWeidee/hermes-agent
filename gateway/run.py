@@ -2289,6 +2289,96 @@ class GatewayRunner:
     def _running_agent_count(self) -> int:
         return len(self._running_agents)
 
+    def _heavy_task_guard_settings(self) -> dict:
+        """Return optional gateway-level guard settings for expensive work.
+
+        Kept out of GatewayConfig on purpose: this is an operator preference
+        that can be rolled out from config.yaml without changing the persisted
+        gateway schema.  Defaults are disabled for backward compatibility.
+        """
+        try:
+            from hermes_cli.config import load_config
+            cfg = load_config() or {}
+        except Exception:
+            cfg = {}
+        gateway_cfg = cfg.get("gateway", {}) if isinstance(cfg, dict) else {}
+        guard = gateway_cfg.get("heavy_task_guard", {}) if isinstance(gateway_cfg, dict) else {}
+        if not isinstance(guard, dict):
+            guard = {}
+        return guard
+
+    @staticmethod
+    def _heavy_task_guard_enabled(value: Any) -> bool:
+        if isinstance(value, bool):
+            return value
+        if value is None:
+            return False
+        return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+    @staticmethod
+    def _looks_like_heavy_coding_prompt(text: str) -> bool:
+        """Heuristic for prompts likely to start expensive coding/tool work."""
+        s = (text or "").strip().lower()
+        if not s or s.startswith("/"):
+            return False
+        heavy_phrases = (
+            "implement", "implemen", "fix", "debug", "refactor", "build", "test",
+            "run tests", "prüf", "pruef", "check den build", "xcode", "swift",
+            "repo", "code", "coding", "feature", "bug", "deploy", "release",
+            "mach", "baue", "erstelle", "ändere", "aendere", "reparier",
+            "review", "ci", "build-status", "compil", "kompil",
+        )
+        return any(phrase in s for phrase in heavy_phrases)
+
+    @staticmethod
+    def _heavy_task_guard_override_requested(text: str) -> bool:
+        s = (text or "").strip().lower()
+        override_phrases = (
+            "trotzdem starten", "trotzdem machen", "mach trotzdem",
+            "go anyway", "run anyway", "start anyway", "override guard",
+            "ignore guard", "force start", "force it",
+        )
+        return any(phrase in s for phrase in override_phrases)
+
+    def _maybe_block_heavy_task_start(self, event: MessageEvent, session_key: str) -> Optional[str]:
+        """Warn instead of starting another expensive coding task when saturated."""
+        guard = self._heavy_task_guard_settings()
+        enabled = self._heavy_task_guard_enabled(
+            os.getenv("HERMES_HEAVY_TASK_GUARD", guard.get("enabled"))
+        )
+        if not enabled:
+            return None
+
+        text = event.text or ""
+        if self._heavy_task_guard_override_requested(text):
+            return None
+        if not self._looks_like_heavy_coding_prompt(text):
+            return None
+
+        try:
+            max_active = int(os.getenv("HERMES_HEAVY_TASK_GUARD_MAX", guard.get("max_active_agents", 2)))
+        except Exception:
+            max_active = 2
+        max_active = max(1, max_active)
+
+        active_sessions = [
+            key for key in self._running_agents.keys()
+            if key != session_key
+        ]
+        if len(active_sessions) < max_active:
+            return None
+
+        preview = "\n".join(f"- `{key}`" for key in active_sessions[:6])
+        more = "" if len(active_sessions) <= 6 else f"\n- … +{len(active_sessions) - 6} weitere"
+        return (
+            "⚠️ Heavy-task guard: Es laufen bereits "
+            f"{len(active_sessions)} Agent-Runs. Ich starte diese vermutlich schwere Coding-Aufgabe "
+            "noch nicht automatisch.\n\n"
+            f"Aktiv:\n{preview}{more}\n\n"
+            "Wenn du sie trotzdem parallel starten willst, antworte mit z. B. "
+            "`trotzdem starten: <deine Aufgabe>` oder nutze `/agents` für Details."
+        )
+
     def _status_action_label(self) -> str:
         return "restart" if self._restart_requested else "shutdown"
 
@@ -7488,6 +7578,10 @@ class GatewayRunner:
             if self._should_send_telegram_lobby_reminder(source):
                 return self._telegram_topic_root_lobby_message()
             return None
+
+        heavy_task_guard_message = self._maybe_block_heavy_task_start(event, _quick_key)
+        if heavy_task_guard_message:
+            return heavy_task_guard_message
 
         # ── Claim this session before any await ───────────────────────
         # Between here and _run_agent registering the real AIAgent, there
