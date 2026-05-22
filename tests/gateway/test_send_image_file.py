@@ -49,6 +49,13 @@ class TestExtractMediaImages:
         media, _ = BasePlatformAdapter.extract_media(content)
         assert len(media) == 1
 
+    def test_html_document_extracted(self):
+        content = "Dashboard:\nMEDIA:/Users/marc/Projects/TradingBot/reports/dashboard/latest.html"
+        media, cleaned = BasePlatformAdapter.extract_media(content)
+        assert media == [("/Users/marc/Projects/TradingBot/reports/dashboard/latest.html", False)]
+        assert "MEDIA:" not in cleaned
+        assert "latest.html" not in cleaned
+
     def test_mixed_audio_and_image(self):
         content = "MEDIA:/audio.ogg\nMEDIA:/screenshot.png"
         media, _ = BasePlatformAdapter.extract_media(content)

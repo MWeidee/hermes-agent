@@ -20,7 +20,12 @@ Install dependency:  pip install youtube-transcript-api
 import argparse
 import json
 import re
+import shutil
+import subprocess
 import sys
+import tempfile
+from pathlib import Path
+from typing import Optional
 
 
 def extract_video_id(url_or_id: str) -> str:
@@ -73,6 +78,87 @@ def fetch_transcript(video_id: str, languages: list = None):
     ]
 
 
+def _repo_root() -> Path:
+    """Return the Hermes repo root for importing shared tool modules from this skill script."""
+    return Path(__file__).resolve().parents[4]
+
+
+def _download_youtube_audio(url_or_id: str, output_dir: str) -> str:
+    """Download a YouTube video's best small audio stream into ``output_dir``.
+
+    This intentionally avoids yt-dlp post-processing, so the fallback does not
+    require ffmpeg merely to obtain an audio file. The STT backend can convert
+    later if its selected provider needs a WAV input.
+    """
+    yt_dlp = shutil.which("yt-dlp")
+    if not yt_dlp:
+        raise RuntimeError("Audio fallback requires yt-dlp to download YouTube audio")
+
+    output_dir_path = Path(output_dir)
+    before = {p.resolve() for p in output_dir_path.glob("*") if p.is_file()}
+    command = [
+        yt_dlp,
+        "--no-playlist",
+        "--max-filesize",
+        "25M",
+        "-f",
+        "ba[ext=m4a]/bestaudio[ext=m4a]/bestaudio",
+        "-o",
+        str(output_dir_path / "%(id)s.%(ext)s"),
+        url_or_id,
+    ]
+
+    try:
+        subprocess.run(command, check=True, capture_output=True, text=True)
+    except subprocess.CalledProcessError as exc:
+        details = (exc.stderr or exc.stdout or str(exc)).strip()
+        raise RuntimeError(f"yt-dlp audio download failed: {details}") from exc
+
+    downloaded = [
+        p for p in output_dir_path.glob("*")
+        if p.is_file() and p.resolve() not in before
+    ]
+    audio_files = [
+        p for p in downloaded
+        if p.suffix.lower() in {".mp3", ".mp4", ".m4a", ".webm", ".ogg", ".aac", ".flac", ".wav"}
+    ]
+    if not audio_files:
+        raise RuntimeError("yt-dlp completed but no audio file was downloaded")
+    audio_files.sort(key=lambda p: p.stat().st_size, reverse=True)
+    return str(audio_files[0])
+
+
+def fetch_audio_fallback_transcript(url_or_id: str, model: Optional[str] = None) -> dict:
+    """Download YouTube audio and transcribe it with Hermes STT/Whisper providers."""
+    repo = str(_repo_root())
+    if repo not in sys.path:
+        sys.path.insert(0, repo)
+
+    from tools.transcription_tools import transcribe_audio
+
+    with tempfile.TemporaryDirectory(prefix="hermes-youtube-audio-") as output_dir:
+        audio_path = _download_youtube_audio(url_or_id, output_dir)
+        result = transcribe_audio(audio_path, model=model)
+
+    if not result.get("success"):
+        raise RuntimeError(result.get("error") or "Audio transcription failed")
+
+    transcript = (result.get("transcript") or "").strip()
+    if not transcript:
+        raise RuntimeError("Audio transcription returned an empty transcript")
+
+    return {
+        "video_id": extract_video_id(url_or_id),
+        "language": "audio",
+        "source": "audio_fallback",
+        "provider": result.get("provider", "unknown"),
+        "segment_count": 1,
+        "duration": "0:00",
+        "segments": [{"text": transcript, "start": 0.0, "duration": 0.0}],
+        "full_text": transcript,
+    }
+
+
 def main():
     parser = argparse.ArgumentParser(description="Fetch YouTube transcript as JSON")
     parser.add_argument("url", help="YouTube URL or video ID")
@@ -82,6 +168,10 @@ def main():
                         help="Include timestamped text in output")
     parser.add_argument("--text-only", action="store_true",
                         help="Output plain text instead of JSON")
+    parser.add_argument("--audio-fallback", action="store_true",
+                        help="If caption transcript fetching fails, download audio with yt-dlp and transcribe via Hermes STT/Whisper")
+    parser.add_argument("--stt-model", default=None,
+                        help="Optional STT model override for --audio-fallback")
     args = parser.parse_args()
 
     video_id = extract_video_id(args.url)
@@ -90,6 +180,21 @@ def main():
     try:
         segments = fetch_transcript(video_id, languages)
     except Exception as e:
+        if args.audio_fallback:
+            try:
+                fallback_result = fetch_audio_fallback_transcript(args.url, model=args.stt_model)
+                if args.text_only:
+                    print(fallback_result["full_text"])
+                else:
+                    print(json.dumps(fallback_result, ensure_ascii=False, indent=2))
+                return
+            except Exception as fallback_error:
+                print(json.dumps({
+                    "error": str(e),
+                    "audio_fallback_error": str(fallback_error),
+                }, ensure_ascii=False))
+                sys.exit(1)
+
         error_msg = str(e)
         if "disabled" in error_msg.lower():
             print(json.dumps({"error": "Transcripts are disabled for this video."}))

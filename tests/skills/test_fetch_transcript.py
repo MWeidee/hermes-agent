@@ -65,6 +65,56 @@ class TestFetchTranscriptImportError:
         assert "youtube-transcript-api" in captured.err
 
 
+class TestAudioFallback:
+    def test_audio_fallback_downloads_audio_and_transcribes(self, tmp_path, monkeypatch):
+        """When captions are blocked, the helper can download audio and use Hermes STT."""
+        audio_path = tmp_path / "video.m4a"
+
+        def fake_run(cmd, check, capture_output, text):
+            assert cmd[0] == "yt-dlp"
+            assert "--no-playlist" in cmd
+            assert "--max-filesize" in cmd
+            audio_path.write_bytes(b"fake m4a audio")
+            return mock.Mock(stdout="", stderr="")
+
+        monkeypatch.setattr(fetch_transcript.shutil, "which", lambda name: "yt-dlp" if name == "yt-dlp" else None)
+        monkeypatch.setattr(fetch_transcript.subprocess, "run", fake_run)
+        monkeypatch.setattr(fetch_transcript.tempfile, "TemporaryDirectory", lambda prefix=None: _StaticTempDir(tmp_path))
+        monkeypatch.setitem(
+            sys.modules,
+            "tools.transcription_tools",
+            mock.Mock(transcribe_audio=mock.Mock(return_value={
+                "success": True,
+                "transcript": "audio transcript",
+                "provider": "local_command",
+            })),
+        )
+
+        result = fetch_transcript.fetch_audio_fallback_transcript("https://youtu.be/dQw4w9WgXcQ")
+
+        assert result["source"] == "audio_fallback"
+        assert result["provider"] == "local_command"
+        assert result["full_text"] == "audio transcript"
+        assert result["segments"] == [{"text": "audio transcript", "start": 0.0, "duration": 0.0}]
+
+    def test_audio_fallback_reports_missing_ytdlp(self, monkeypatch):
+        monkeypatch.setattr(fetch_transcript.shutil, "which", lambda name: None)
+
+        with pytest.raises(RuntimeError, match="yt-dlp"):
+            fetch_transcript.fetch_audio_fallback_transcript("dQw4w9WgXcQ")
+
+
+class _StaticTempDir:
+    def __init__(self, path):
+        self.path = str(path)
+
+    def __enter__(self):
+        return self.path
+
+    def __exit__(self, exc_type, exc, tb):
+        return False
+
+
 class TestPyprojectDeclaresYoutubeExtra:
     def test_youtube_extra_declared_in_pyproject(self):
         """youtube-transcript-api must be listed in pyproject.toml [youtube] extra (issue #22243)."""

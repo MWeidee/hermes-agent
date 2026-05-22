@@ -9068,12 +9068,6 @@ class GatewayRunner:
             "session_key": session_key,
         })
 
-        # Resolve session config info to surface to the user
-        try:
-            session_info = self._format_session_info()
-        except Exception:
-            session_info = ""
-
         if new_entry:
             header = self._telegram_topic_new_header(source) or t("gateway.reset.header_default")
         else:
@@ -9124,16 +9118,7 @@ class GatewayRunner:
         except Exception:
             pass
 
-        # Append a random tip to the reset message
-        try:
-            from hermes_cli.tips import get_random_tip
-            _tip_line = t("gateway.reset.tip", tip=get_random_tip())
-        except Exception:
-            _tip_line = ""
-
-        if session_info:
-            return EphemeralReply(f"{header}\n\n{session_info}{_tip_line}")
-        return EphemeralReply(f"{header}{_tip_line}")
+        return EphemeralReply(header)
 
     async def _handle_profile_command(self, event: MessageEvent) -> str:
         """Handle /profile — show active profile name and home directory."""

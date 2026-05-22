@@ -16,6 +16,11 @@ Extract transcripts from YouTube videos and convert them into useful formats.
 
 ```bash
 pip install youtube-transcript-api
+
+# Optional audio fallback when captions are blocked/unavailable:
+pip install yt-dlp
+# plus one Hermes STT backend, e.g. local faster-whisper:
+pip install faster-whisper
 ```
 
 ## Helper Script
@@ -34,6 +39,9 @@ python3 SKILL_DIR/scripts/fetch_transcript.py "URL" --timestamps
 
 # Specific language with fallback chain
 python3 SKILL_DIR/scripts/fetch_transcript.py "URL" --language tr,en
+
+# If transcript/caption fetching fails, download audio and transcribe via Hermes STT/Whisper
+python3 SKILL_DIR/scripts/fetch_transcript.py "URL" --audio-fallback
 ```
 
 ## Output Formats
@@ -60,7 +68,7 @@ After fetching the transcript, format it based on what the user asks for:
 ## Workflow
 
 1. **Fetch** the transcript using the helper script with `--text-only --timestamps`.
-2. **Validate**: confirm the output is non-empty and in the expected language. If empty, retry without `--language` to get any available transcript. If still empty, tell the user the video likely has transcripts disabled.
+2. **Validate**: confirm the output is non-empty and in the expected language. If empty, retry without `--language` to get any available transcript. If captions are blocked/unavailable and the task needs best-effort recovery, retry with `--audio-fallback` so the helper downloads audio via `yt-dlp` and transcribes through Hermes STT (`faster-whisper`, local Whisper CLI, Groq, OpenAI, xAI, etc. depending on config).
 3. **Chunk if needed**: if the transcript exceeds ~50K characters, split into overlapping chunks (~40K with 2K overlap) and summarize each chunk before merging.
 4. **Transform** into the requested output format. If the user did not specify a format, default to a summary.
 5. **Verify**: re-read the transformed output to check for coherence, correct timestamps, and completeness before presenting.
@@ -70,4 +78,6 @@ After fetching the transcript, format it based on what the user asks for:
 - **Transcript disabled**: tell the user; suggest they check if subtitles are available on the video page.
 - **Private/unavailable video**: relay the error and ask the user to verify the URL.
 - **No matching language**: retry without `--language` to fetch any available transcript, then note the actual language to the user.
+- **Captions blocked / IP rate-limited**: retry with `--audio-fallback`. If it fails, report both the caption error and `audio_fallback_error` from the JSON output.
+- **Audio fallback prerequisites missing**: install `yt-dlp` and configure an STT provider. For local free STT, install `faster-whisper`; for local Whisper CLI, also ensure `ffmpeg` is available for non-WAV inputs.
 - **Dependency missing**: run `pip install youtube-transcript-api` and retry.
