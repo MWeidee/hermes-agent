@@ -32,6 +32,7 @@ import logging
 import os
 import re
 import shlex
+import subprocess
 import sys
 import signal
 import tempfile
@@ -652,6 +653,41 @@ def _home_thread_env_var(platform_name: str) -> str:
 def _restart_notification_pending() -> bool:
     """Return True when a /restart completion marker is waiting to be delivered."""
     return (_hermes_home / ".restart_notify.json").exists()
+
+
+def _running_under_service_manager() -> bool:
+    """Return True when this gateway process is managed by a service manager.
+
+    systemd exposes INVOCATION_ID. macOS launchd does not set an equivalent
+    environment marker, so verify that launchd's service record points at our
+    PID. This keeps /restart and /update on the service-managed path instead of
+    spawning a fragile detached helper that can die during self-updates.
+    """
+    if os.environ.get("INVOCATION_ID"):
+        return True
+
+    if sys.platform != "darwin":
+        return False
+
+    try:
+        from hermes_cli.gateway import get_launchd_label
+
+        result = subprocess.run(
+            ["launchctl", "list", get_launchd_label()],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if result.returncode == 0:
+            current_pid = str(os.getpid())
+            for line in result.stdout.splitlines():
+                parts = line.split()
+                if len(parts) >= 3 and parts[0] == current_pid:
+                    return True
+    except Exception:
+        pass
+
+    return False
 
 
 # Mark this process as a gateway so cli.py's module-level load_cli_config()
@@ -9881,9 +9917,11 @@ class GatewayRunner:
         # Docker/Podman container, use the service restart path: exit with
         # code 75 so the service manager / container restart policy restarts
         # us.  The detached subprocess approach (setsid + bash) doesn't work
-        # under systemd (KillMode=mixed kills the cgroup) or Docker (tini
-        # exits when the gateway dies, taking the detached helper with it).
-        _under_service = bool(os.environ.get("INVOCATION_ID"))  # systemd sets this
+        # reliably under systemd (KillMode=mixed kills the cgroup), launchd
+        # self-updates (the helper can disappear when the old process exits),
+        # or Docker (tini exits when the gateway dies, taking the detached
+        # helper with it).
+        _under_service = _running_under_service_manager()
         _in_container = os.path.exists("/.dockerenv") or os.path.exists("/run/.containerenv")
         if _under_service or _in_container:
             self.request_restart(detached=False, via_service=True)
