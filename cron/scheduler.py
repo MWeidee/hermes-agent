@@ -592,11 +592,16 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
 
     # Optionally wrap the content with a header/footer so the user knows this
     # is a cron delivery.  Wrapping is on by default; set cron.wrap_response: false
-    # in config.yaml for clean output.
+    # in config.yaml for clean output.  The verbose management footer can be
+    # disabled independently with cron.management_footer: false while keeping
+    # the concise job_id header.
     wrap_response = True
+    management_footer = True
     try:
         user_cfg = load_config()
-        wrap_response = user_cfg.get("cron", {}).get("wrap_response", True)
+        cron_cfg = user_cfg.get("cron", {})
+        wrap_response = cron_cfg.get("wrap_response", True)
+        management_footer = cron_cfg.get("management_footer", True)
     except Exception:
         pass
 
@@ -607,9 +612,13 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
             f"Cronjob Response: {task_name}\n"
             f"(job_id: {job_id})\n"
             f"-------------\n\n"
-            f"{content}\n\n"
-            f"To stop or manage this job, send me a new message (e.g. \"stop reminder {task_name}\")."
+            f"{content}"
         )
+        if management_footer:
+            delivery_content += (
+                f"\n\nTo stop or manage this job, send me a new message "
+                f"(e.g. \"stop reminder {task_name}\")."
+            )
     else:
         delivery_content = content
 

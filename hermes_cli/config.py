@@ -1503,6 +1503,10 @@ DEFAULT_CONFIG = {
         # Wrap delivered cron responses with a header (task name) and footer
         # ("The agent cannot see this message").  Set to false for clean output.
         "wrap_response": True,
+        # Show the verbose "To stop or manage this job..." footer when
+        # wrap_response is enabled. Set to false to keep only the concise
+        # header/job_id plus the job output.
+        "management_footer": True,
         # Maximum number of due jobs to run in parallel per tick.
         # null/0 = unbounded (limited only by thread count).
         # 1 = serial (pre-v0.9 behaviour).
